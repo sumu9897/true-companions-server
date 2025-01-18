@@ -140,37 +140,38 @@ async function run() {
     //   res.send(biodataList);
     // });
 
-    app.get("/biodatas",async(req, res) => {
-      const result = await biodataCollection.find().toArray();
-      res.send(result);
-    })
+    // app.get("/biodatas",async(req, res) => {
+    //   const result = await biodataCollection.find().toArray();
+    //   res.send(result);
+    // })
 
-    // app.get("/biodata", async (req, res) => {
-    //   const { ageRange, gender, division } = req.query;
+    app.get("/biodatas", async (req, res) => {
+      const { ageMin, ageMax, biodataType, division } = req.query;
     
-    //   // Create filter object
-    //   const filter = {};
+      // Construct the query object
+      const query = {};
+      if (ageMin && ageMax) {
+        query.age = { $gte: parseInt(ageMin), $lte: parseInt(ageMax) };
+      }
+      if (biodataType) {
+        query.biodataType = biodataType;
+      }
+      if (division) {
+        query.permanentDivision = division;
+      }
+      // console.log("Query Object:", query);
     
-    //   if (ageRange) {
-    //     const [minAge, maxAge] = ageRange.split(',').map(Number);
-    //     filter.age = { $gte: minAge, $lte: maxAge };
-    //   }
+      try {
+        const result = await biodataCollection.find(query).toArray();
+        res.send(result);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ error: "Failed to fetch biodatas" });
+      }
+    });
     
-    //   if (gender) {
-    //     filter.gender = gender;
-    //   }
+
     
-    //   if (division) {
-    //     filter.permanentDivision = division;
-    //   }
-    
-    //   try {
-    //     const result = await biodataCollection.find(filter).toArray();
-    //     res.send(result);
-    //   } catch (err) {
-    //     res.status(500).send('Error fetching biodatas');
-    //   }
-    // });
     
 
     app.get("/biodata/:id", async (req, res) => {
