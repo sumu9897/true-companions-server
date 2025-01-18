@@ -1,18 +1,18 @@
 const express = require("express");
-const app = express();
 const cors = require("cors");
-const jwt = require('jsonwebtoken')
+const jwt = require("jsonwebtoken");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 require("dotenv").config();
+
+const app = express();
 const port = process.env.PORT || 5000;
 
-// middleware
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rmec6.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
+// MongoDB connection
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rmec6.mongodb.net/?retryWrites=true&w=majority`;
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -23,178 +23,189 @@ const client = new MongoClient(uri, {
 
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
 
     // Define collections
-    const userCollection = client.db("trueCompanions").collection("users");
-    const biodataCollection = client.db("trueCompanions").collection("biodatas");
-    const contactRequestCollection = client.db("trueCompanions").collection("contactRequests");
-    const successStoryCollection = client.db("trueCompanions").collection("successStories");
+    const db = client.db("trueCompanions");
+    const userCollection = db.collection("users");
+    const biodataCollection = db.collection("biodatas");
+    const contactRequestCollection = db.collection("contactRequests");
+    const successStoryCollection = db.collection("successStories");
 
-    // JWT related API
-    app.post('/jwt', async(req, res) => {
+    // JWT Token Generation API
+    app.post("/jwt", async (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: '1h'
-      })
-      res.send({token});
-    })
+        expiresIn: "1h",
+      });
+      res.send({ token });
+    });
 
-    // middlewares
-    // Verify Token
+    // Middleware for token verification
     const verifyToken = (req, res, next) => {
-      console.log('inside verify token',req.headers.authorization);
-      if(!req.headers.authorization){
-        return res.status(401).send({message: 'unatorized access'});
+      const authorization = req.headers.authorization;
+      if (!authorization) {
+        return res.status(401).send({ message: "Unauthorized access" });
       }
-      const token = req.headers.authorization.split(' ')[1];
-      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) =>{
-        if(err){
-          return res.status(401).send({message: 'unatorized access'})
+      const token = authorization.split(" ")[1];
+      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (err) {
+          return res.status(401).send({ message: "Unauthorized access" });
         }
-        req.decoded= decoded;
+        req.decoded = decoded;
         next();
-      })
-      // next()
-    }
+      });
+    };
 
-    // use verify admin after verifyToken
-    const verifyAdmin = async(req, res, next) => {
+    const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
-      const query = {email: email};
-      const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === 'admin';
-      if(!isAdmin){
-        return res.status(403).send({message: 'forbidden access'})
+      const user = await userCollection.findOne({ email });
+      if (!user || user.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden access" });
       }
       next();
+    };
 
-    }
+    // Users API
+    app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
+      const users = await userCollection.find().toArray();
+      res.send(users);
+    });
 
-    //Users Related API 
-    app.get('/users',verifyToken, verifyAdmin, async (req,res) => {
-      const result = await userCollection.find().toArray();
-      res.send(result)
-    })
-    app.get('/users/admin/:email',verifyToken, async(req, res) =>{
+    app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
-      if(email !== req.decoded.email){
-        return res.status(403).send({message: 'forbidden access'})
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
       }
+      const user = await userCollection.findOne({ email });
+      const isAdmin = user?.role === "admin";
+      res.send({ admin: isAdmin });
+    });
 
-      const query = {email: email};
-      const user = await userCollection.findOne(query);
-      let admin = false;
-      if(user){
-        admin = user?.role === 'admin';
-      }
-      res.send({ admin });
-    } )
-
-
-    app.post('/users', async (req, res) =>{
+    app.post("/users", async (req, res) => {
       const user = req.body;
-
-      const query = {email: user.email}
-      const existingUser = await userCollection.findOne(query);
-      if(existingUser){
-        return res.send({message: 'User already exists', insertedId: null})
+      const existingUser = await userCollection.findOne({ email: user.email });
+      if (existingUser) {
+        return res.send({ message: "User already exists" });
       }
       const result = await userCollection.insertOne(user);
       res.send(result);
-    })
-    //make admin api
-    app.patch('/users/admin/:id', verifyToken, verifyAdmin, async(req, res) => {
+    });
+
+    app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const filter = {_id: new ObjectId(id)};
-      const updatedDoc = {
-        $set: {
-          role: 'admin'
-        }
-      } 
-      const result = await userCollection.updateOne(filter, updatedDoc)
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role: "admin" } }
+      );
       res.send(result);
-    } )
-    //user deleted api
-    app.delete('/users/:id', verifyToken, verifyAdmin, async(req, res) => {
+    });
+
+    app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const query ={ _id: new ObjectId(id)}
-      const result = await userCollection.deleteOne(query);
+      const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
+    // Biodata API
+    app.post("/biodata", verifyToken, async (req, res) => {
+      const biodata = req.body;
+      const lastBiodata = await biodataCollection
+        .find()
+        .sort({ biodataId: -1 })
+        .limit(1)
+        .toArray();
+      const lastId = lastBiodata[0]?.biodataId || 0;
+      biodata.biodataId = lastId + 1;
+      biodata.createdAt = new Date();
+      const result = await biodataCollection.insertOne(biodata);
+      res.send(result);
+    });
+
+    app.put("/biodata/:id", verifyToken, async (req, res) => {
+      const id = parseInt(req.params.id);
+      const updatedData = req.body;
+      const result = await biodataCollection.updateOne(
+        { biodataId: id },
+        { $set: updatedData }
+      );
+      res.send(result);
+    });
+
+    // app.get("/biodata", verifyToken, async (req, res) => {
+    //   const email = req.decoded.email;
+    //   const biodataList = await biodataCollection
+    //     .find({ contactEmail: email })
+    //     .toArray();
+    //   res.send(biodataList);
+    // });
+
+    app.get("/biodatas",async(req, res) => {
+      const result = await biodataCollection.find().toArray();
       res.send(result);
     })
 
-        // Biodata Related API
-        app.post('/biodata', verifyToken, async (req, res) => {
-          const biodata = req.body;
+    // app.get("/biodata", async (req, res) => {
+    //   const { ageRange, gender, division } = req.query;
     
-          // Get the last created biodata ID
-          const lastBiodata = await biodataCollection.find().sort({ biodataId: -1 }).limit(1).toArray();
-          const lastId = lastBiodata.length > 0 ? lastBiodata[0].biodataId : 0;
-          const newBiodataId = lastId + 1;
+    //   // Create filter object
+    //   const filter = {};
     
-          // Add the new biodataId to the biodata object
-          biodata.biodataId = newBiodataId;
-          biodata.createdAt = new Date();
+    //   if (ageRange) {
+    //     const [minAge, maxAge] = ageRange.split(',').map(Number);
+    //     filter.age = { $gte: minAge, $lte: maxAge };
+    //   }
     
-          const result = await biodataCollection.insertOne(biodata);
-          res.send(result);
-        });
+    //   if (gender) {
+    //     filter.gender = gender;
+    //   }
     
-        // Update an existing biodata
-        app.put('/biodata/:id', verifyToken, async (req, res) => {
-          const id = req.params.id;
-          const updatedData = req.body;
+    //   if (division) {
+    //     filter.permanentDivision = division;
+    //   }
     
-          const filter = { _id: new ObjectId(id) };
-          const updateDoc = {
-            $set: updatedData,
-          };
-    
-          const result = await biodataCollection.updateOne(filter, updateDoc);
-          res.send(result);
-        });
-    
-        // Get all biodatas (for admin or authorized purposes)
-        app.get('/biodata', verifyToken, verifyAdmin, async (req, res) => {
-          const result = await biodataCollection.find().toArray();
-          res.send(result);
-        });
-    
-        // Get biodata by ID
-        app.get('/biodata/:id', verifyToken, async (req, res) => {
-          const id = req.params.id;
-    
-          const query = { _id: new ObjectId(id) };
-          const biodata = await biodataCollection.findOne(query);
-          res.send(biodata);
-        });
-    
-        // Delete a biodata
-        app.delete('/biodata/:id', verifyToken, verifyAdmin, async (req, res) => {
-          const id = req.params.id;
-          const query = { _id: new ObjectId(id) };
-          const result = await biodataCollection.deleteOne(query);
-          res.send(result);
-        });
+    //   try {
+    //     const result = await biodataCollection.find(filter).toArray();
+    //     res.send(result);
+    //   } catch (err) {
+    //     res.status(500).send('Error fetching biodatas');
+    //   }
+    // });
     
 
-    // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
-  } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    app.get("/biodata/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await biodataCollection.findOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
+    app.delete("/biodata/:id", verifyToken, async (req, res) => {
+      const id = parseInt(req.params.id);
+      const result = await biodataCollection.deleteOne({ biodataId: id });
+      res.send(result);
+    });
+
+    // Contact Requests API
+    app.post("/contactRequest", verifyToken, async (req, res) => {
+      const request = req.body;
+      const result = await contactRequestCollection.insertOne(request);
+      res.send(result);
+    });
+
+    // Success Stories API
+    app.post("/successStory", verifyToken, async (req, res) => {
+      const story = req.body;
+      const result = await successStoryCollection.insertOne(story);
+      res.send(result);
+    });
+
+    // Start server
+    app.listen(port, () => {
+      console.log(`Server running on port ${port}`);
+    });
+  } catch (err) {
+    console.error(err);
   }
 }
+
 run().catch(console.dir);
-
-app.get("/", (req, res) => {
-  res.send("Search You Partner");
-});
-
-app.listen(port, () => {
-  console.log(`True Companions Server is Running ${port}`);
-});
