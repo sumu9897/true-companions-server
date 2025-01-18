@@ -124,6 +124,61 @@ async function run() {
       res.send(result);
     })
 
+        // Biodata Related API
+        app.post('/biodata', verifyToken, async (req, res) => {
+          const biodata = req.body;
+    
+          // Get the last created biodata ID
+          const lastBiodata = await biodataCollection.find().sort({ biodataId: -1 }).limit(1).toArray();
+          const lastId = lastBiodata.length > 0 ? lastBiodata[0].biodataId : 0;
+          const newBiodataId = lastId + 1;
+    
+          // Add the new biodataId to the biodata object
+          biodata.biodataId = newBiodataId;
+          biodata.createdAt = new Date();
+    
+          const result = await biodataCollection.insertOne(biodata);
+          res.send(result);
+        });
+    
+        // Update an existing biodata
+        app.put('/biodata/:id', verifyToken, async (req, res) => {
+          const id = req.params.id;
+          const updatedData = req.body;
+    
+          const filter = { _id: new ObjectId(id) };
+          const updateDoc = {
+            $set: updatedData,
+          };
+    
+          const result = await biodataCollection.updateOne(filter, updateDoc);
+          res.send(result);
+        });
+    
+        // Get all biodatas (for admin or authorized purposes)
+        app.get('/biodata', verifyToken, verifyAdmin, async (req, res) => {
+          const result = await biodataCollection.find().toArray();
+          res.send(result);
+        });
+    
+        // Get biodata by ID
+        app.get('/biodata/:id', verifyToken, async (req, res) => {
+          const id = req.params.id;
+    
+          const query = { _id: new ObjectId(id) };
+          const biodata = await biodataCollection.findOne(query);
+          res.send(biodata);
+        });
+    
+        // Delete a biodata
+        app.delete('/biodata/:id', verifyToken, verifyAdmin, async (req, res) => {
+          const id = req.params.id;
+          const query = { _id: new ObjectId(id) };
+          const result = await biodataCollection.deleteOne(query);
+          res.send(result);
+        });
+    
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
