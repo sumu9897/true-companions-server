@@ -34,20 +34,50 @@ async function run() {
     const successStoryCollection = db.collection("successStories");
 
     // User related API
+    // Get All User
+    app.get('/users', async (req, res) =>{
+      const result = await userCollection.find().toArray();
+      res.send(result);
+    });
+    
+    // Create a user
     app.post('/users', async (req, res) => {
-      console.log('User data received:', req.body);
+      // console.log('User data received:', req.body);
       const user = req.body;
     
       const query = { email: user.email };
       const existingUser = await userCollection.findOne(query);
       if (existingUser) {
-        console.log('User already exists:', existingUser);
+        // console.log('User already exists:', existingUser);
         return res.send({ message: 'User already exists', insertedId: null });
       }
       const result = await userCollection.insertOne(user);
-      console.log('User inserted:', result);
+      // console.log('User inserted:', result);
       res.send(result);
     });
+
+    // Make user Admin
+    app.patch('/users/admin/:id', async(req, res) => {
+      const id = req.params.id;
+      const filter = {_id: new ObjectId(id)};
+      const updatedDoc = {
+        $set: {
+          role: 'admin'
+        }
+      }
+      const result = await userCollection.updateOne(filter, updatedDoc)
+      res.send(result);
+      console.log("Role Change " , result)
+    })
+
+    // Delete Signle user
+    app.delete('/users/:id', async(req, res) => {
+      const id = req.params.id;
+      const query = {_id: new ObjectId(id)}
+      const result = await userCollection.deleteOne(query);
+      res.send(result)
+      // console.log("Delete user", result)
+    })
     
 
     
