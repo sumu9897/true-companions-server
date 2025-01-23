@@ -4,10 +4,15 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const port = process.env.PORT || 5500;
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY)
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 // middleware
-app.use(cors({ origin: ["http://localhost:5173", "https://true-companions.web.app"], credentials: true }));
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "https://true-companions.web.app"],
+    credentials: true,
+  })
+);
 
 app.use(express.json());
 
@@ -32,6 +37,7 @@ async function run() {
     const userCollection = db.collection("users");
     const biodataCollection = db.collection("biodatas");
     const favoritesCollection = db.collection("favorites");
+    const paymentCollection = db.collection("payments");
     const contactRequestCollection = db.collection("contactRequests");
     const successStoryCollection = db.collection("successStories");
 
@@ -74,10 +80,26 @@ async function run() {
     // User related API
     // Get All User
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
-      // console.log(req.headers);
-      const result = await userCollection.find().toArray();
+      const search = req.query.search || ""; // Get search term from query
+      const query = search
+        ? { name: { $regex: search, $options: "i" } } // Case-insensitive regex search
+        : {};
+      const result = await userCollection.find(query).toArray();
       res.send(result);
     });
+
+    app.patch(
+      "/users/premium/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updateDoc = { $set: { role: "premium" } };
+        const result = await userCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      }
+    );
 
     app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
@@ -138,40 +160,6 @@ async function run() {
       // console.log("Delete user", result)
     });
 
-    // Biodata API
-
-    // Create or Edit Biodata
-    // app.post("/biodatas", verifyToken, async (req, res) => {
-    //   const { email } = req.decoded;
-    //   const biodata = req.body;
-
-    //   // Check if user already has a biodata
-    //   const existingBiodata = await biodataCollection.findOne({ email });
-
-    //   if (existingBiodata) {
-    //     // Update existing biodata
-    //     const filter = { email };
-    //     const updatedDoc = {
-    //       $set: biodata,
-    //     };
-    //     const result = await biodataCollection.updateOne(filter, updatedDoc);
-    //     res.send({ message: "Biodata updated successfully", result });
-    //   } else {
-    //     // Create new biodata with auto-incremented ID
-    //     const lastBiodata = await biodataCollection
-    //       .find()
-    //       .sort({ biodataId: -1 })
-    //       .limit(1)
-    //       .toArray();
-    //     const lastId = lastBiodata[0]?.biodataId || 0;
-    //     const newId = lastId + 1;
-
-    //     const newBiodata = { ...biodata, email, biodataId: newId };
-    //     const result = await biodataCollection.insertOne(newBiodata);
-    //     res.send({ message: "Biodata created successfully", result });
-    //   }
-    // });
-
     app.post("/biodatas", verifyToken, async (req, res) => {
       const biodata = req.body;
       const lastBiodata = await biodataCollection
@@ -231,7 +219,6 @@ async function run() {
         res.status(500).send({ error: "Failed to fetch biodata" });
       }
     });
-    
 
     // Fetch User's Biodata by email
     app.get("/biodatas/:email", async (req, res) => {
@@ -247,130 +234,161 @@ async function run() {
       }
     });
 
+    // Request Premium Status
     app.post("/biodatas/premium-request", verifyToken, async (req, res) => {
       const { email } = req.body;
-    
+
       try {
+        // Check if the biodata exists
         const biodata = await biodataCollection.findOne({ email });
         if (!biodata) {
           return res.status(404).send({ message: "Biodata not found" });
         }
-    
+
+        // Prevent duplicate premium requests
         if (biodata.premiumStatus === "approved") {
-          return res.status(400).send({ message: "Biodata is already premium" });
+          return res.status(400).send({ message: "Already a premium member" });
         }
-    
+
+        // Mark request as pending
         const result = await biodataCollection.updateOne(
           { email },
           {
             $set: {
-              premiumStatus: "pending", 
+              premiumStatus: "pending",
               premiumRequestDate: new Date(),
             },
           }
         );
-    
+
         res.send({
           success: true,
           message: "Premium request sent. Waiting for admin approval.",
         });
       } catch (error) {
-        console.error("Error handling premium request:", error);
-        res.status(500).send({ message: "Failed to process premium request" });
-      }
-    });
-    
-
-    // Premium Request API
-    // app.post("/biodatas/premium-request", verifyToken, async (req, res) => {
-    //   const { email } = req.body;
-    //   const biodata = await biodataCollection.findOne({ email });
-
-    //   if (!biodata) {
-    //     return res.status(404).send({ message: "Biodata not found" });
-    //   }
-
-    //   const updatedBiodata = { ...biodata, isPremium: true };
-    //   const result = await biodataCollection.updateOne(
-    //     { email },
-    //     { $set: updatedBiodata }
-    //   );
-
-    //   res.send({ success: true, message: "Biodata marked as premium" });
-    // });
-
-
-    app.get("/admin/premium-requests", verifyToken, verifyAdmin, async (req, res) => {
-      try {
-        const requests = await biodataCollection.find({ premiumStatus: "pending" }).toArray();
-        res.send(requests);
-      } catch (error) {
-        console.error("Error fetching premium requests:", error);
-        res.status(500).send({ message: "Failed to fetch premium requests" });
+        console.error("Error in premium request:", error);
+        res.status(500).send({ error: "Failed to send premium request" });
       }
     });
 
+    // Get All Pending Premium Requests
+    app.get(
+      "/admin/premium-requests",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const pendingRequests = await biodataCollection
+            .find({ premiumStatus: "pending" })
+            .toArray();
+          res.send(pendingRequests);
+        } catch (error) {
+          console.error("Error fetching premium requests:", error);
+          res.status(500).send({ error: "Failed to fetch premium requests" });
+        }
+      }
+    );
+
+    // Get All Premium Profiles
     app.get("/premium-profiles", async (req, res) => {
-      const { order = "asc" } = req.query;
-    
+      const { order = "asc", limit = 10 } = req.query;
+
       try {
         const sortOrder = order === "desc" ? -1 : 1;
         const premiumProfiles = await biodataCollection
-          .find({ isPremium: true }) // Filter for premium members
+          .find({ isPremium: true }) // Fetch premium profiles
           .sort({ age: sortOrder }) // Sort by age
-          .limit(6) // Limit to 6 profiles
+          .limit(parseInt(limit)) // Apply limit
           .toArray();
-    
+
         res.status(200).send(premiumProfiles);
       } catch (error) {
         console.error("Error fetching premium profiles:", error);
         res.status(500).send({ error: "Failed to fetch premium profiles" });
       }
     });
-    
 
-    app.patch("/biodatas/premium-approve/:id", verifyToken, verifyAdmin, async (req, res) => {
-      const { id } = req.params;
-    
-      try {
-        const result = await biodataCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { premiumStatus: "approved", isPremium: true } }
-        );
-    
-        if (result.modifiedCount === 0) {
-          return res.status(404).send({ message: "Biodata not found or already approved" });
+    // Approve Premium Request
+    app.patch(
+      "/biodatas/premium-approve/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        try {
+          const result = await biodataCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                premiumStatus: "approved",
+                isPremium: true,
+                premiumApprovedDate: new Date(),
+              },
+            }
+          );
+
+          if (result.modifiedCount === 0) {
+            return res
+              .status(404)
+              .send({ message: "Biodata not found or already approved" });
+          }
+
+          res.send({ success: true, message: "Premium request approved" });
+        } catch (error) {
+          console.error("Error approving premium request:", error);
+          res.status(500).send({ error: "Failed to approve premium request" });
         }
-    
-        res.send({ success: true, message: "Premium request approved" });
+      }
+    );
+
+    // Reject Premium Request
+    app.patch(
+      "/biodatas/premium-reject/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+
+        try {
+          const result = await biodataCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { premiumStatus: "rejected" } } // Mark as rejected
+          );
+
+          if (result.modifiedCount === 0) {
+            return res
+              .status(404)
+              .send({ message: "Biodata not found or already rejected" });
+          }
+
+          res.send({ success: true, message: "Premium request rejected" });
+        } catch (error) {
+          console.error("Error rejecting premium request:", error);
+          res.status(500).send({ error: "Failed to reject premium request" });
+        }
+      }
+    );
+
+    // Check If User is Premium
+    app.get("/biodatas/is-premium/:email", verifyToken, async (req, res) => {
+      const { email } = req.params;
+
+      try {
+        const biodata = await biodataCollection.findOne({ email });
+
+        if (!biodata) {
+          return res.status(404).send({ message: "Biodata not found" });
+        }
+
+        const isPremium = biodata.isPremium || false; // Default false
+        res.send({ email, isPremium });
       } catch (error) {
-        console.error("Error approving premium request:", error);
-        res.status(500).send({ message: "Failed to approve premium request" });
+        console.error("Error checking premium status:", error);
+        res.status(500).send({ error: "Failed to check premium status" });
       }
     });
 
-    
-    app.patch("/biodatas/premium-reject/:id", verifyToken, verifyAdmin, async (req, res) => {
-      const { id } = req.params;
-    
-      try {
-        const result = await biodataCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { premiumStatus: "rejected" } }
-        );
-    
-        if (result.modifiedCount === 0) {
-          return res.status(404).send({ message: "Biodata not found or already rejected" });
-        }
-    
-        res.send({ success: true, message: "Premium request rejected" });
-      } catch (error) {
-        console.error("Error rejecting premium request:", error);
-        res.status(500).send({ message: "Failed to reject premium request" });
-      }
-    });
-    
-    
     app.get("/admin/biodatas", verifyToken, verifyAdmin, async (req, res) => {
       const { page = 1, limit = 20 } = req.query;
 
@@ -389,96 +407,77 @@ async function run() {
       });
     });
 
-
-    // app.post('/favorites', verifyToken, async (req, res) => {
-    //   const { biodataId } = req.body;
-    //   const userId = req.user.id; // Ensure verifyToken middleware sets req.user
-    
-    //   // Check if the biodata is already in the favorites
-    //   const existingFavorite = await favoritesCollection.findOne({ biodataId, userId });
-    //   if (existingFavorite) {
-    //     return res.status(400).json({ message: "Already in favorites" });
-    //   }
-    
-    //   // Save the favorite
-    //   const newFavorite = { biodataId, userId };
-    //   const result = await favoritesCollection.insertOne(newFavorite);
-    
-    //   res.status(200).json({ message: "Biodata added to favorites", result });
-    // });
-
-    // app.post('/favorites', async (req,res) => {
-    //   const favoriteItem = req.body;
-    //   const result = await favoritesCollection.insertOne(favoriteItem)
-    //   res.send(result);
-    // })
-
     app.post("/favorites", verifyToken, async (req, res) => {
-      const { biodataId } = req.body;
-      const email = req.decoded.email;
-    
+      const { id } = req.body; // Get biodataId from the request body
+      const email = req.decoded.email; // Get user's email from decoded JWT token
+
+      // Validate `id`
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid biodata ID." });
+      }
+
       try {
-        // Check if the favorite already exists
+        // Check if the favorite already exists for the user and biodataId
         const existingFavorite = await favoritesCollection.findOne({
           email,
-          biodataId,
+          id: new ObjectId(id), // Ensure proper ID type
         });
         if (existingFavorite) {
           return res
             .status(400)
             .send({ message: "This biodata is already in your favorites." });
         }
-    
-        // Fetch the biodata details from the biodatas collection
-        const biodata = await biodatasCollection.findOne({ biodataId });
+
+        // Fetch the biodata details from the `biodataCollection`
+        const biodata = await biodataCollection.findOne({
+          _id: new ObjectId(id),
+        });
         if (!biodata) {
-          console.error(`Biodata with ID ${biodataId} not found`);
+          console.error(`Biodata with ID ${id} not found`);
           return res.status(404).send({ message: "Biodata not found." });
         }
-    
-        // Create the favorite entry with additional biodata details
+
+        // Create a new favorite entry
         const result = await favoritesCollection.insertOne({
           email,
-          biodataId,
+          id: new ObjectId(id), // Reference biodata ID
           profileImage: biodata.profileImage,
           name: biodata.name,
           age: biodata.age,
-          email: biodata.email,
+          biodataEmail: biodata.email, // Avoid confusion with user's email
           occupation: biodata.occupation,
           addedAt: new Date(),
         });
-    
-        console.log("Favorite added successfully:", result);
-        res.send({ message: "Biodata added to favorites.", result });
+
+        res.send({
+          message: "Biodata added to favorites successfully.",
+          result,
+        });
       } catch (error) {
         console.error("Error adding to favorites:", error);
-        res.status(500).send({ error: "Failed to add biodata to favorites", details: error.message });
+        res.status(500).send({
+          error: "Failed to add biodata to favorites.",
+          details: error.message,
+        });
       }
     });
-    
-    
-    
-    
 
-    app.get('/favorites/:id',verifyToken, async (req, res) => {
+    app.get("/favorites/:id", verifyToken, async (req, res) => {
       const biodataId = req.params.id;
       const userId = req.user.id; // Make sure user is authenticated
-    
+
       const favorite = await favoritesCollection.findOne({ biodataId, userId });
-      
+
       if (favorite) {
         return res.status(200).json({ exists: true });
       }
-    
+
       return res.status(404).json({ exists: false });
     });
-    
-    
-    
 
     app.get("/favorites", verifyToken, async (req, res) => {
       const email = req.decoded.email;
-    
+
       try {
         const favorites = await favoritesCollection
           .aggregate([
@@ -494,37 +493,78 @@ async function run() {
             { $unwind: "$biodataDetails" },
           ])
           .toArray();
-    
+
         res.send(favorites);
       } catch (error) {
         console.error("Error fetching favorites:", error);
         res.status(500).send({ error: "Failed to fetch favorites" });
       }
     });
+
+    // Create Payment Intent Route
+    app.post('/create-payment-intent', async (req, res) => {
+      const { price } = req.body;
+      
+      const amount = parseInt(price * 100);
+      console.log(amount, 'amount')
+
+      const paymentIntent = await stripe.paymentIntents.create({
+        amount: amount,
+        currency : 'usd',
+        payment_method_types : ['card']
+      });
+
+      res.send({
+        clientSecret: paymentIntent.client_secret
+      })
+    });
     
+
+
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const query = { email: req.params.email };
+      if (req.params.email !== req.decoded.email) {
+        return res.status(403).send({ message: "forbidden access" });
+      }
+      const result = await paymentCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.post("/payments", async (req, res) => {
+      const payment = req.body;
+      const paymentResult = await paymentCollection.insertOne(payment);
+
+      //  carefully delete each item from the cart
+      console.log("payment info", payment);
+
+
+      res.send( paymentResult );
+    });
 
     app.delete("/favorites/:biodataId", verifyToken, async (req, res) => {
       const { biodataId } = req.params;
       const email = req.decoded.email;
-    
+
       if (!biodataId) {
         return res.status(400).json({ message: "biodataId is required" });
       }
-    
+
       try {
-        const result = await favoritesCollection.deleteOne({ email, biodataId: String(biodataId) });
-    
+        const result = await favoritesCollection.deleteOne({
+          email,
+          biodataId: String(biodataId),
+        });
+
         if (result.deletedCount === 0) {
           return res.status(404).json({ message: "Favorite not found" });
         }
-    
+
         res.status(200).json({ message: "Favorite deleted successfully" });
       } catch (error) {
         console.error("Error deleting favorite:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     });
-    
 
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
