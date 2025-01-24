@@ -305,7 +305,7 @@ async function run() {
 
     // Approve Premium Request
     app.patch(
-      "/biodatas/premium-approve/:id",
+      "/admin/biodatas/:id/approve",
       verifyToken,
       verifyAdmin,
       async (req, res) => {
@@ -339,7 +339,7 @@ async function run() {
 
     // Reject Premium Request
     app.patch(
-      "/biodatas/premium-reject/:id",
+      "/admin/biodatas/:id/approve",
       verifyToken,
       verifyAdmin,
       async (req, res) => {
@@ -470,31 +470,7 @@ async function run() {
       return res.status(404).json({ exists: false });
     });
 
-    // app.get("/favorites", verifyToken, async (req, res) => {
-    //   const email = req.decoded.email;
-      
-    //   try {
-    //     const favorites = await favoritesCollection
-    //       .aggregate([
-    //         { $match: { email } },
-    //         {
-    //           $lookup: {
-    //             from: "biodatas",
-    //             localField: "biodataId",
-    //             foreignField: "_id",
-    //             as: "biodataDetails",
-    //           },
-    //         },
-    //         { $unwind: "$biodataDetails" },
-    //       ])
-    //       .toArray();
     
-    //     res.send(favorites);
-    //   } catch (error) {
-    //     console.error("Error fetching favorites:", error);
-    //     res.status(500).send({ error: "Failed to fetch favorites" });
-    //   }
-    // });
 
 
 
