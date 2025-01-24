@@ -435,11 +435,11 @@ async function run() {
         // Create a new favorite entry
         const result = await favoritesCollection.insertOne({
           email,
-          id: new ObjectId(id), 
+          id: new ObjectId(id),
           profileImage: biodata.profileImage,
           name: biodata.name,
           age: biodata.age,
-          biodataEmail: biodata.email, 
+          biodataEmail: biodata.email,
           occupation: biodata.occupation,
           addedAt: new Date(),
         });
@@ -470,28 +470,19 @@ async function run() {
       return res.status(404).json({ exists: false });
     });
 
-    
-
-
-
-    app.get('/favorites',verifyToken, async (req, res) => {
+    app.get("/favorites", verifyToken, async (req, res) => {
       const email = req.query.email;
       const query = { email: email };
       const result = await favoritesCollection.find(query).toArray();
       res.send(result);
     });
 
-    
-
-    app.delete('/favorites/:id', async (req, res) => {
+    app.delete("/favorites/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) }
+      const query = { _id: new ObjectId(id) };
       const result = await favoritesCollection.deleteOne(query);
       res.send(result);
     });
-    
-    
-    
 
     // Create Payment Intent Route
     app.post("/create-payment-intent", async (req, res) => {
@@ -528,10 +519,7 @@ async function run() {
     app.post("/payments", async (req, res) => {
       const payment = req.body;
       const paymentResult = await paymentCollection.insertOne(payment);
-
-      //  carefully delete each item from the cart
       console.log("payment info", payment);
-
       res.send(paymentResult);
     });
 
@@ -557,6 +545,92 @@ async function run() {
       } catch (error) {
         console.error("Error deleting favorite:", error);
         res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    app.get("/success-stats", async (req, res) => {
+      const totalBiodata = await biodataCollection.countDocuments();
+      const maleBiodata = await biodataCollection.countDocuments({
+        biodataType: "Male",
+      });
+      const femaleBiodata = await biodataCollection.countDocuments({
+        biodataType: "Female",
+      });
+      const marriagesCompleted = await successStoryCollection.countDocuments();
+
+      res.json({
+        totalBiodata,
+        maleBiodata,
+        femaleBiodata,
+        marriagesCompleted,
+      });
+    });
+
+    // GET route to fetch success stories sorted by marriage date
+    app.get("/successStory", verifyToken, async (req, res) => {
+      try {
+        const { sortBy } = req.query;
+        const sortOption = sortBy === "marriageDate" ? { marriageDate: 1 } : {}; // Ascending order
+        const successStories = await successStoryCollection
+          .find({})
+          .sort(sortOption)
+          .toArray();
+        res.status(200).json(successStories);
+      } catch (error) {
+        console.error("Error fetching success stories:", error);
+        res.status(500).json({ message: "Internal server error." });
+      }
+    });
+
+    // POST route to save a success story
+    app.post("/successStory", verifyToken, async (req, res) => {
+      try {
+        const {
+          selfBiodataId,
+          partnerBiodataId,
+          coupleImage,
+          successStory,
+          marriageDate,
+          reviewStar,
+        } = req.body;
+
+        // Validate required fields
+        if (
+          !selfBiodataId ||
+          !partnerBiodataId ||
+          !coupleImage ||
+          !successStory ||
+          !marriageDate ||
+          !reviewStar
+        ) {
+          return res.status(400).json({ message: "All fields are required." });
+        }
+
+        // Validate reviewStar is within acceptable range (1-5)
+        if (reviewStar < 1 || reviewStar > 5) {
+          return res
+            .status(400)
+            .json({ message: "Review star must be between 1 and 5." });
+        }
+
+        const newStory = {
+          selfBiodataId,
+          partnerBiodataId,
+          coupleImage,
+          successStory,
+          marriageDate,
+          reviewStar: parseInt(reviewStar), // Ensure reviewStar is stored as a number
+          createdAt: new Date(),
+        };
+
+        const result = await successStoryCollection.insertOne(newStory);
+        res.status(201).json({
+          message: "Success story added successfully!",
+          storyId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Error adding success story:", error);
+        res.status(500).json({ message: "Internal server error." });
       }
     });
 
