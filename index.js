@@ -566,11 +566,11 @@ async function run() {
       });
     });
 
-    // GET route to fetch success stories sorted by marriage date
-    app.get("/successStory", verifyToken, async (req, res) => {
+
+    app.get("/successStory", async (req, res) => {
       try {
         const { sortBy } = req.query;
-        const sortOption = sortBy === "marriageDate" ? { marriageDate: 1 } : {}; // Ascending order
+        const sortOption = sortBy === "marriageDate" ? { marriageDate: 1 } : {}; 
         const successStories = await successStoryCollection
           .find({})
           .sort(sortOption)
