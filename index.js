@@ -530,6 +530,11 @@ async function run() {
       res.send(result);
     });
 
+    app.get("/payments", verifyToken, async(req,res) => {
+      const result  = await paymentCollection.find().toArray();
+      res.send(result);
+    })
+
     app.post("/payments", async (req, res) => {
       const payment = req.body;
       const paymentResult = await paymentCollection.insertOne(payment);
@@ -565,6 +570,48 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+
+    app.get('/admin-stats', async (req, res) => {
+      try {
+        const biodataCount = await biodataCollection.estimatedDocumentCount();
+    
+        // Count male and female biodata
+        const maleCount = await biodataCollection.countDocuments({ biodataType: "Male" });
+        const femaleCount = await biodataCollection.countDocuments({ biodataType: "Female" });
+    
+        // Count premium biodata
+        const premiumCount = await biodataCollection.countDocuments({ premiumStatus: "approved" });
+    
+        // Calculate total revenue
+        // const payments = await paymentCollection.find().toArray();
+        // const revenue = payments.reduce((total, payment) => total + payment.amount, 0);
+
+        const result = await paymentCollection.aggregate([
+          {
+            $group: { 
+              _id: null,
+              totalRevenue: {
+                $sum: '$amount'
+              }
+            }
+          }
+        ]).toArray();
+
+        const revenue = result.length > 0 ? result[0].totalRevenue : 0;
+    
+        res.send({
+          biodataCount,
+          maleCount,
+          femaleCount,
+          premiumCount,
+          revenue,
+        });
+      } catch (error) {
+        console.error("Error fetching admin stats:", error);
+        res.status(500).send({ error: "Internal server error" });
+      }
+    });
+    
 
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
