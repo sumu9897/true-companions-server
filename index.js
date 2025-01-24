@@ -290,22 +290,17 @@ async function run() {
     );
 
     // Get All Premium Profiles
+
     app.get("/premium-profiles", async (req, res) => {
-      const { order = "asc", limit = 10 } = req.query;
+      const { order = "asc" } = req.query;
+      const sortOrder = order === "desc" ? -1 : 1;
 
-      try {
-        const sortOrder = order === "desc" ? -1 : 1;
-        const premiumProfiles = await biodataCollection
-          .find({ isPremium: true }) // Fetch premium profiles
-          .sort({ age: sortOrder }) // Sort by age
-          .limit(parseInt(limit)) // Apply limit
-          .toArray();
+      const premiumProfiles = await biodataCollection
+        .find({ premiumStatus: "approved" })
+        .sort({ age: sortOrder })
+        .toArray();
 
-        res.status(200).send(premiumProfiles);
-      } catch (error) {
-        console.error("Error fetching premium profiles:", error);
-        res.status(500).send({ error: "Failed to fetch premium profiles" });
-      }
+      res.json(premiumProfiles);
     });
 
     // Approve Premium Request
@@ -440,11 +435,11 @@ async function run() {
         // Create a new favorite entry
         const result = await favoritesCollection.insertOne({
           email,
-          id: new ObjectId(id), // Reference biodata ID
+          id: new ObjectId(id), 
           profileImage: biodata.profileImage,
           name: biodata.name,
           age: biodata.age,
-          biodataEmail: biodata.email, // Avoid confusion with user's email
+          biodataEmail: biodata.email, 
           occupation: biodata.occupation,
           addedAt: new Date(),
         });
@@ -464,7 +459,7 @@ async function run() {
 
     app.get("/favorites/:id", verifyToken, async (req, res) => {
       const biodataId = req.params.id;
-      const userId = req.user.id; // Make sure user is authenticated
+      const userId = req.user.id;
 
       const favorite = await favoritesCollection.findOne({ biodataId, userId });
 
@@ -475,51 +470,70 @@ async function run() {
       return res.status(404).json({ exists: false });
     });
 
-    app.get("/favorites", verifyToken, async (req, res) => {
-      const email = req.decoded.email;
+    // app.get("/favorites", verifyToken, async (req, res) => {
+    //   const email = req.decoded.email;
+      
+    //   try {
+    //     const favorites = await favoritesCollection
+    //       .aggregate([
+    //         { $match: { email } },
+    //         {
+    //           $lookup: {
+    //             from: "biodatas",
+    //             localField: "biodataId",
+    //             foreignField: "_id",
+    //             as: "biodataDetails",
+    //           },
+    //         },
+    //         { $unwind: "$biodataDetails" },
+    //       ])
+    //       .toArray();
+    
+    //     res.send(favorites);
+    //   } catch (error) {
+    //     console.error("Error fetching favorites:", error);
+    //     res.status(500).send({ error: "Failed to fetch favorites" });
+    //   }
+    // });
 
-      try {
-        const favorites = await favoritesCollection
-          .aggregate([
-            { $match: { email } },
-            {
-              $lookup: {
-                from: "biodatas",
-                localField: "biodataId",
-                foreignField: "biodataId",
-                as: "biodataDetails",
-              },
-            },
-            { $unwind: "$biodataDetails" },
-          ])
-          .toArray();
 
-        res.send(favorites);
-      } catch (error) {
-        console.error("Error fetching favorites:", error);
-        res.status(500).send({ error: "Failed to fetch favorites" });
-      }
+
+    app.get('/favorites',verifyToken, async (req, res) => {
+      const email = req.query.email;
+      const query = { email: email };
+      const result = await favoritesCollection.find(query).toArray();
+      res.send(result);
     });
 
+    
+
+    app.delete('/favorites/:id', async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) }
+      const result = await favoritesCollection.deleteOne(query);
+      res.send(result);
+    });
+    
+    
+    
+
     // Create Payment Intent Route
-    app.post('/create-payment-intent', async (req, res) => {
+    app.post("/create-payment-intent", async (req, res) => {
       const { price } = req.body;
-      
+
       const amount = parseInt(price * 100);
-      console.log(amount, 'amount')
+      console.log(amount, "amount");
 
       const paymentIntent = await stripe.paymentIntents.create({
         amount: amount,
-        currency : 'usd',
-        payment_method_types : ['card']
+        currency: "usd",
+        payment_method_types: ["card"],
       });
 
       res.send({
-        clientSecret: paymentIntent.client_secret
-      })
+        clientSecret: paymentIntent.client_secret,
+      });
     });
-    
-
 
     app.get("/payments/:email", verifyToken, async (req, res) => {
       const query = { email: req.params.email };
@@ -530,10 +544,10 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/payments", verifyToken, async(req,res) => {
-      const result  = await paymentCollection.find().toArray();
+    app.get("/payments", verifyToken, async (req, res) => {
+      const result = await paymentCollection.find().toArray();
       res.send(result);
-    })
+    });
 
     app.post("/payments", async (req, res) => {
       const payment = req.body;
@@ -542,8 +556,7 @@ async function run() {
       //  carefully delete each item from the cart
       console.log("payment info", payment);
 
-
-      res.send( paymentResult );
+      res.send(paymentResult);
     });
 
     app.delete("/favorites/:biodataId", verifyToken, async (req, res) => {
@@ -571,34 +584,42 @@ async function run() {
       }
     });
 
-    app.get('/admin-stats', async (req, res) => {
+    app.get("/admin-stats", async (req, res) => {
       try {
         const biodataCount = await biodataCollection.estimatedDocumentCount();
-    
+
         // Count male and female biodata
-        const maleCount = await biodataCollection.countDocuments({ biodataType: "Male" });
-        const femaleCount = await biodataCollection.countDocuments({ biodataType: "Female" });
-    
+        const maleCount = await biodataCollection.countDocuments({
+          biodataType: "Male",
+        });
+        const femaleCount = await biodataCollection.countDocuments({
+          biodataType: "Female",
+        });
+
         // Count premium biodata
-        const premiumCount = await biodataCollection.countDocuments({ premiumStatus: "approved" });
-    
+        const premiumCount = await biodataCollection.countDocuments({
+          premiumStatus: "approved",
+        });
+
         // Calculate total revenue
         // const payments = await paymentCollection.find().toArray();
         // const revenue = payments.reduce((total, payment) => total + payment.amount, 0);
 
-        const result = await paymentCollection.aggregate([
-          {
-            $group: { 
-              _id: null,
-              totalRevenue: {
-                $sum: '$amount'
-              }
-            }
-          }
-        ]).toArray();
+        const result = await paymentCollection
+          .aggregate([
+            {
+              $group: {
+                _id: null,
+                totalRevenue: {
+                  $sum: "$amount",
+                },
+              },
+            },
+          ])
+          .toArray();
 
         const revenue = result.length > 0 ? result[0].totalRevenue : 0;
-    
+
         res.send({
           biodataCount,
           maleCount,
@@ -611,7 +632,6 @@ async function run() {
         res.status(500).send({ error: "Internal server error" });
       }
     });
-    
 
     // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
