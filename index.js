@@ -1,25 +1,29 @@
 const express = require("express");
-const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
-require("dotenv").config();
-const port = process.env.PORT || 5500;
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+require("dotenv").config();
 
-// middleware
+const app = express();
+const port = process.env.PORT || 5500;
+
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://true-companions.web.app"],
+    origin: [
+      "http://localhost:5173",
+      "https://true-companions.web.app",
+      process.env.CLIENT_URL,
+    ].filter(Boolean),
     credentials: true,
   })
 );
-
 app.use(express.json());
 
-const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+// ─── MongoDB Client ───────────────────────────────────────────────────────────
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rmec6.mongodb.net/?retryWrites=true&w=majority`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -28,12 +32,28 @@ const client = new MongoClient(uri, {
   },
 });
 
+// ─── Auth Middleware ──────────────────────────────────────────────────────────
+const verifyToken = (req, res, next) => {
+  const authorization = req.headers.authorization;
+  if (!authorization) {
+    return res.status(401).send({ message: "Unauthorized access" });
+  }
+  const token = authorization.split(" ")[1];
+  jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(401).send({ message: "Unauthorized access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
 async function run() {
   try {
-    // Connect the client to the server	(optional starting in v4.7)
-    // await client.connect();
-
     const db = client.db("trueCompanions");
+
+    // Collections
     const userCollection = db.collection("users");
     const biodataCollection = db.collection("biodatas");
     const favoritesCollection = db.collection("favorites");
@@ -41,127 +61,129 @@ async function run() {
     const contactRequestCollection = db.collection("contactRequests");
     const successStoryCollection = db.collection("successStories");
 
-    // jwt related api
-    app.post("/jwt", async (req, res) => {
-      const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-        expiresIn: "1h",
-      });
-      res.send({ token });
-    });
-
-    // middlewares
-    const verifyToken = (req, res, next) => {
-      const authorization = req.headers.authorization;
-      if (!authorization) {
-        return res.status(401).send({ message: "Unauthorized access" });
-      }
-      const token = authorization.split(" ")[1];
-      jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-        if (err) {
-          return res.status(401).send({ message: "Unauthorized access" });
-        }
-        req.decoded = decoded;
-        next();
-      });
-    };
-
+    // ── Role Middleware (must come after collections are defined) ─────────────
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      const isAdmin = user?.role === "admin";
-      if (!isAdmin) {
+      const user = await userCollection.findOne({ email });
+      if (user?.role !== "admin") {
         return res.status(403).send({ message: "Forbidden access" });
       }
       next();
     };
 
-    // User related API
-    // Get All User
+    // ════════════════════════════════════════════════════════════════════════
+    // AUTH — JWT
+    // ════════════════════════════════════════════════════════════════════════
+
+    // POST /jwt — issue JWT after Firebase verification
+    app.post("/jwt", async (req, res) => {
+      const user = req.body;
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
+        expiresIn: "7d",
+      });
+      res.send({ token });
+    });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // USERS
+    // ════════════════════════════════════════════════════════════════════════
+
+    // GET /users — admin only; supports ?search=username
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
-      const search = req.query.search || ""; // Get search term from query
+      const search = req.query.search || "";
       const query = search
-        ? { name: { $regex: search, $options: "i" } } // Case-insensitive regex search
+        ? { name: { $regex: search, $options: "i" } }
         : {};
       const result = await userCollection.find(query).toArray();
       res.send(result);
     });
 
-    app.patch(
-      "/users/premium/:id",
-      verifyToken,
-      verifyAdmin,
-      async (req, res) => {
-        const id = req.params.id;
-        const filter = { _id: new ObjectId(id) };
-        const updateDoc = { $set: { role: "premium" } };
-        const result = await userCollection.updateOne(filter, updateDoc);
-        res.send(result);
-      }
-    );
-
+    // GET /users/admin/:email — check if the requester is admin
     app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
-        return res.status(403).send({ message: "forbidden accsess" });
+        return res.status(403).send({ message: "Forbidden access" });
       }
-
-      const query = { email: email };
-      const user = await userCollection.findOne(query);
-      let admin = false;
-      if (user) {
-        admin = user?.role === "admin";
-      }
-      res.send({ admin });
+      const user = await userCollection.findOne({ email });
+      res.send({ admin: user?.role === "admin" });
     });
 
-    // Create a user
-    app.post("/users", async (req, res) => {
-      // console.log('User data received:', req.body);
-      const user = req.body;
+    // GET /users/premium/:email — check if user is premium
+    app.get("/users/premium/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      const user = await userCollection.findOne({ email });
+      res.send({ isPremium: user?.role === "premium" || user?.isPremium === true });
+    });
 
-      const query = { email: user.email };
-      const existingUser = await userCollection.findOne(query);
+    // POST /users — create user on first login (upsert-safe)
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      const existingUser = await userCollection.findOne({ email: user.email });
       if (existingUser) {
-        // console.log('User already exists:', existingUser);
         return res.send({ message: "User already exists", insertedId: null });
       }
+      // Default fields
+      user.role = user.role || "user";
+      user.isPremium = false;
+      user.createdAt = new Date();
       const result = await userCollection.insertOne(user);
-      // console.log('User inserted:', result);
+      res.status(201).send(result);
+    });
+
+    // PATCH /users/admin/:id — make user admin
+    app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid user ID" });
+      }
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role: "admin" } }
+      );
       res.send(result);
     });
 
-    // Make user Admin
-    app.patch(
-      "/users/admin/:id",
-      verifyToken,
-      verifyAdmin,
-      async (req, res) => {
-        const id = req.params.id;
-        const filter = { _id: new ObjectId(id) };
-        const updatedDoc = {
-          $set: {
-            role: "admin",
-          },
-        };
-        const result = await userCollection.updateOne(filter, updatedDoc);
-        res.send(result);
-        // console.log("Role Change ", result);
+    // PATCH /users/premium/:id — grant premium status (admin only)
+    app.patch("/users/premium/:id", verifyToken, verifyAdmin, async (req, res) => {
+      const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid user ID" });
       }
-    );
+      const result = await userCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { role: "premium", isPremium: true } }
+      );
+      res.send(result);
+    });
 
-    // Delete Signle user
+    // DELETE /users/:id — admin only
     app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await userCollection.deleteOne(query);
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid user ID" });
+      }
+      const result = await userCollection.deleteOne({ _id: new ObjectId(id) });
       res.send(result);
-      // console.log("Delete user", result)
     });
 
+    // ════════════════════════════════════════════════════════════════════════
+    // BIODATAS
+    // ════════════════════════════════════════════════════════════════════════
+
+    // POST /biodatas — create biodata; auto-generates biodataId
     app.post("/biodatas", verifyToken, async (req, res) => {
       const biodata = req.body;
+
+      // Prevent duplicate biodata per user
+      const existing = await biodataCollection.findOne({ email: biodata.email });
+      if (existing) {
+        return res.status(400).send({ message: "Biodata already exists for this user. Use PUT to update." });
+      }
+
+      // Auto-generate sequential biodataId
       const lastBiodata = await biodataCollection
         .find()
         .sort({ biodataId: -1 })
@@ -169,20 +191,46 @@ async function run() {
         .toArray();
       const lastId = lastBiodata[0]?.biodataId || 0;
       biodata.biodataId = lastId + 1;
+      biodata.isPremium = false;
+      biodata.premiumStatus = "none"; // none | pending | approved
       biodata.createdAt = new Date();
+      biodata.updatedAt = new Date();
+
       const result = await biodataCollection.insertOne(biodata);
+      res.status(201).send(result);
+    });
+
+    // PUT /biodatas/:email — update user's own biodata
+    app.put("/biodatas/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      const update = req.body;
+      delete update._id;           // prevent _id overwrite
+      delete update.biodataId;     // prevent ID overwrite
+      delete update.isPremium;     // only admin changes this
+      delete update.premiumStatus;
+      update.updatedAt = new Date();
+
+      const result = await biodataCollection.updateOne(
+        { email },
+        { $set: update },
+        { upsert: false }
+      );
       res.send(result);
     });
 
-    // Fetch a User's Biodata
+    // GET /biodatas — public list with filtering & pagination
     app.get("/biodatas", async (req, res) => {
       const {
-        page = null,
-        limit = null,
-        ageMin = 0,
+        page,
+        limit,
+        ageMin = 18,
         ageMax = 100,
         biodataType,
         division,
+        sort,
       } = req.query;
 
       const query = {
@@ -191,514 +239,454 @@ async function run() {
         ...(division && { permanentDivision: division }),
       };
 
-      let options = {};
+      const sortOption = sort === "desc" ? { age: -1 } : sort === "asc" ? { age: 1 } : {};
+
+      let cursor = biodataCollection.find(query).sort(sortOption);
+
       if (page && limit) {
-        options = {
-          skip: (page - 1) * parseInt(limit),
-          limit: parseInt(limit),
-        };
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        cursor = cursor.skip(skip).limit(parseInt(limit));
       }
 
-      const biodatas = await biodataCollection.find(query, options).toArray();
+      const biodatas = await cursor.toArray();
       const total = await biodataCollection.countDocuments(query);
       res.send({ biodatas, total });
     });
 
-    app.get("/biodata/:id", verifyToken, async (req, res) => {
+    // GET /biodatas/premium — 6 premium profiles for homepage
+    app.get("/biodatas/premium", async (req, res) => {
+      const { order = "asc" } = req.query;
+      const sortOrder = order === "desc" ? -1 : 1;
+      const premiumProfiles = await biodataCollection
+        .find({ premiumStatus: "approved" })
+        .sort({ age: sortOrder })
+        .limit(6)
+        .toArray();
+      res.send(premiumProfiles);
+    });
+
+    // GET /biodatas/stats — public counters for homepage
+    app.get("/biodatas/stats", async (req, res) => {
+      const totalBiodata = await biodataCollection.countDocuments();
+      const maleBiodata = await biodataCollection.countDocuments({ biodataType: "Male" });
+      const femaleBiodata = await biodataCollection.countDocuments({ biodataType: "Female" });
+      const premiumBiodata = await biodataCollection.countDocuments({ premiumStatus: "approved" });
+      const marriagesCompleted = await successStoryCollection.countDocuments();
+      res.send({ totalBiodata, maleBiodata, femaleBiodata, premiumBiodata, marriagesCompleted });
+    });
+
+    // GET /biodatas/mine — authenticated user's own biodata
+    app.get("/biodatas/mine", verifyToken, async (req, res) => {
+      const email = req.decoded.email;
+      const biodata = await biodataCollection.findOne({ email });
+      if (!biodata) {
+        return res.status(404).send({ message: "Biodata not found" });
+      }
+      res.send(biodata);
+    });
+
+    // GET /biodatas/by-email/:email — fetch biodata by email
+    app.get("/biodatas/by-email/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      const biodata = await biodataCollection.findOne({ email });
+      if (!biodata) return res.status(404).send({ message: "Biodata not found" });
+      res.send(biodata);
+    });
+
+    // GET /biodatas/:id — single biodata by MongoDB _id (private route)
+    // Contact info (email/mobile) is hidden unless user is premium or has approved contact request
+    app.get("/biodatas/:id", verifyToken, async (req, res) => {
       const { id } = req.params;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid biodata ID" });
+      }
       try {
-        const result = await biodataCollection.findOne({
-          _id: new ObjectId(id),
+        const biodata = await biodataCollection.findOne({ _id: new ObjectId(id) });
+        if (!biodata) return res.status(404).send({ message: "Biodata not found" });
+
+        const requesterEmail = req.decoded.email;
+
+        // Check if requester is premium
+        const requesterUser = await userCollection.findOne({ email: requesterEmail });
+        const isPremium = requesterUser?.role === "premium" || requesterUser?.isPremium === true;
+
+        // Check if requester has an approved contact request for this biodata
+        const approvedRequest = await contactRequestCollection.findOne({
+          requesterEmail,
+          biodataId: biodata.biodataId,
+          status: "approved",
         });
-        if (!result) {
-          return res.status(404).send({ message: "Biodata not found" });
+
+        // Strip contact info if not authorised
+        if (!isPremium && !approvedRequest) {
+          delete biodata.contactEmail;
+          delete biodata.mobileNumber;
         }
-        res.send(result);
+
+        res.send(biodata);
       } catch (err) {
         console.error(err);
         res.status(500).send({ error: "Failed to fetch biodata" });
       }
     });
 
-    // Fetch User's Biodata by email
-    app.get("/biodatas/:email", async (req, res) => {
-      const email = req.params.email;
-      try {
-        const biodata = await biodataCollection.findOne({ email });
-        if (!biodata)
-          return res.status(404).json({ message: "Biodata not found" });
-        res.status(200).json(biodata);
-      } catch (error) {
-        console.error("Error fetching biodata:", error);
-        res.status(500).json({ message: "Internal Server Error" });
-      }
-    });
-
-    // Request Premium Status
+    // POST /biodatas/premium-request — user requests premium upgrade
     app.post("/biodatas/premium-request", verifyToken, async (req, res) => {
-      const { email } = req.body;
-
-      try {
-        // Check if the biodata exists
-        const biodata = await biodataCollection.findOne({ email });
-        if (!biodata) {
-          return res.status(404).send({ message: "Biodata not found" });
-        }
-
-        // Prevent duplicate premium requests
-        if (biodata.premiumStatus === "approved") {
-          return res.status(400).send({ message: "Already a premium member" });
-        }
-
-        // Mark request as pending
-        const result = await biodataCollection.updateOne(
-          { email },
-          {
-            $set: {
-              premiumStatus: "pending",
-              premiumRequestDate: new Date(),
-            },
-          }
-        );
-
-        res.send({
-          success: true,
-          message: "Premium request sent. Waiting for admin approval.",
-        });
-      } catch (error) {
-        console.error("Error in premium request:", error);
-        res.status(500).send({ error: "Failed to send premium request" });
+      const email = req.decoded.email;
+      const biodata = await biodataCollection.findOne({ email });
+      if (!biodata) return res.status(404).send({ message: "Biodata not found" });
+      if (biodata.premiumStatus === "approved") {
+        return res.status(400).send({ message: "Already a premium member" });
       }
+      if (biodata.premiumStatus === "pending") {
+        return res.status(400).send({ message: "Premium request already pending" });
+      }
+      await biodataCollection.updateOne(
+        { email },
+        { $set: { premiumStatus: "pending", premiumRequestDate: new Date() } }
+      );
+      res.send({ success: true, message: "Premium request sent. Awaiting admin approval." });
     });
 
-    // Get All Pending Premium Requests
-    app.get(
-      "/admin/premium-requests",
-      verifyToken,
-      verifyAdmin,
-      async (req, res) => {
-        try {
-          const pendingRequests = await biodataCollection
-            .find({ premiumStatus: "pending" })
-            .toArray();
-          res.send(pendingRequests);
-        } catch (error) {
-          console.error("Error fetching premium requests:", error);
-          res.status(500).send({ error: "Failed to fetch premium requests" });
-        }
-      }
-    );
-
-    // Get All Premium Profiles
-
-    app.get("/premium-profiles", async (req, res) => {
-      const { order = "asc" } = req.query;
-      const sortOrder = order === "desc" ? -1 : 1;
-
-      const premiumProfiles = await biodataCollection
-        .find({ premiumStatus: "approved" })
-        .sort({ age: sortOrder })
-        .toArray();
-
-      res.json(premiumProfiles);
-    });
-
-    // Approve Premium Request
-    app.patch(
-      "/admin/biodatas/:id/approve",
-      verifyToken,
-      verifyAdmin,
-      async (req, res) => {
-        const { id } = req.params;
-
-        try {
-          const result = await biodataCollection.updateOne(
-            { _id: new ObjectId(id) },
-            {
-              $set: {
-                premiumStatus: "approved",
-                isPremium: true,
-                premiumApprovedDate: new Date(),
-              },
-            }
-          );
-
-          if (result.modifiedCount === 0) {
-            return res
-              .status(404)
-              .send({ message: "Biodata not found or already approved" });
-          }
-
-          res.send({ success: true, message: "Premium request approved" });
-        } catch (error) {
-          console.error("Error approving premium request:", error);
-          res.status(500).send({ error: "Failed to approve premium request" });
-        }
-      }
-    );
-
-    // Reject Premium Request
-    app.patch(
-      "/admin/biodatas/:id/approve",
-      verifyToken,
-      verifyAdmin,
-      async (req, res) => {
-        const { id } = req.params;
-
-        try {
-          const result = await biodataCollection.updateOne(
-            { _id: new ObjectId(id) },
-            { $set: { premiumStatus: "rejected" } } // Mark as rejected
-          );
-
-          if (result.modifiedCount === 0) {
-            return res
-              .status(404)
-              .send({ message: "Biodata not found or already rejected" });
-          }
-
-          res.send({ success: true, message: "Premium request rejected" });
-        } catch (error) {
-          console.error("Error rejecting premium request:", error);
-          res.status(500).send({ error: "Failed to reject premium request" });
-        }
-      }
-    );
-
-    // Check If User is Premium
-    app.get("/biodatas/is-premium/:email", verifyToken, async (req, res) => {
-      const { email } = req.params;
-
-      try {
-        const biodata = await biodataCollection.findOne({ email });
-
-        if (!biodata) {
-          return res.status(404).send({ message: "Biodata not found" });
-        }
-
-        const isPremium = biodata.isPremium || false; // Default false
-        res.send({ email, isPremium });
-      } catch (error) {
-        console.error("Error checking premium status:", error);
-        res.status(500).send({ error: "Failed to check premium status" });
-      }
-    });
-
+    // GET /admin/biodatas — all biodatas for admin with pagination
     app.get("/admin/biodatas", verifyToken, verifyAdmin, async (req, res) => {
       const { page = 1, limit = 20 } = req.query;
-
-      const options = {
-        skip: (page - 1) * parseInt(limit),
-        limit: parseInt(limit),
-      };
-
-      const biodatas = await biodataCollection.find({}, options).toArray();
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const biodatas = await biodataCollection
+        .find({})
+        .skip(skip)
+        .limit(parseInt(limit))
+        .toArray();
       const total = await biodataCollection.countDocuments();
-      res.send({
-        biodatas,
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
+      res.send({ biodatas, total, page: parseInt(page), limit: parseInt(limit) });
+    });
+
+    // GET /admin/premium-requests — pending premium requests
+    app.get("/admin/premium-requests", verifyToken, verifyAdmin, async (req, res) => {
+      const pendingRequests = await biodataCollection
+        .find({ premiumStatus: "pending" })
+        .toArray();
+      res.send(pendingRequests);
+    });
+
+    // PATCH /admin/biodatas/:id/approve-premium — approve premium request
+    app.patch("/admin/biodatas/:id/approve-premium", verifyToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      const result = await biodataCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { premiumStatus: "approved", isPremium: true, premiumApprovedDate: new Date() } }
+      );
+      if (result.modifiedCount === 0) {
+        return res.status(404).send({ message: "Biodata not found or already approved" });
+      }
+      res.send({ success: true, message: "Premium request approved" });
+    });
+
+    // PATCH /admin/biodatas/:id/reject-premium — reject premium request
+    app.patch("/admin/biodatas/:id/reject-premium", verifyToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      const result = await biodataCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { premiumStatus: "rejected" } }
+      );
+      if (result.modifiedCount === 0) {
+        return res.status(404).send({ message: "Biodata not found" });
+      }
+      res.send({ success: true, message: "Premium request rejected" });
+    });
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FAVOURITES
+    // ════════════════════════════════════════════════════════════════════════
+
+    // GET /favourites — get current user's favourites
+    app.get("/favourites", verifyToken, async (req, res) => {
+      const email = req.decoded.email;
+      const result = await favoritesCollection.find({ email }).toArray();
+      res.send(result);
+    });
+
+    // POST /favourites — add a biodata to favourites
+    app.post("/favourites", verifyToken, async (req, res) => {
+      const { biodataMongoId } = req.body;
+      const email = req.decoded.email;
+
+      if (!ObjectId.isValid(biodataMongoId)) {
+        return res.status(400).send({ message: "Invalid biodata ID" });
+      }
+
+      const existing = await favoritesCollection.findOne({
+        email,
+        biodataMongoId: new ObjectId(biodataMongoId),
       });
-    });
-
-    app.post("/favorites", verifyToken, async (req, res) => {
-      const { id } = req.body; // Get biodataId from the request body
-      const email = req.decoded.email; // Get user's email from decoded JWT token
-
-      // Validate `id`
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).send({ message: "Invalid biodata ID." });
+      if (existing) {
+        return res.status(400).send({ message: "Already in your favourites" });
       }
 
-      try {
-        // Check if the favorite already exists for the user and biodataId
-        const existingFavorite = await favoritesCollection.findOne({
-          email,
-          id: new ObjectId(id), // Ensure proper ID type
-        });
-        if (existingFavorite) {
-          return res
-            .status(400)
-            .send({ message: "This biodata is already in your favorites." });
-        }
+      const biodata = await biodataCollection.findOne({ _id: new ObjectId(biodataMongoId) });
+      if (!biodata) return res.status(404).send({ message: "Biodata not found" });
 
-        // Fetch the biodata details from the `biodataCollection`
-        const biodata = await biodataCollection.findOne({
-          _id: new ObjectId(id),
-        });
-        if (!biodata) {
-          console.error(`Biodata with ID ${id} not found`);
-          return res.status(404).send({ message: "Biodata not found." });
-        }
+      const result = await favoritesCollection.insertOne({
+        email,
+        biodataMongoId: new ObjectId(biodataMongoId),
+        biodataId: biodata.biodataId,
+        name: biodata.name,
+        permanentDivision: biodata.permanentDivision,
+        occupation: biodata.occupation,
+        profileImage: biodata.profileImage,
+        addedAt: new Date(),
+      });
 
-        // Create a new favorite entry
-        const result = await favoritesCollection.insertOne({
-          email,
-          id: new ObjectId(id),
-          profileImage: biodata.profileImage,
-          name: biodata.name,
-          age: biodata.age,
-          biodataEmail: biodata.email,
-          occupation: biodata.occupation,
-          addedAt: new Date(),
-        });
+      res.status(201).send({ message: "Added to favourites", result });
+    });
 
-        res.send({
-          message: "Biodata added to favorites successfully.",
-          result,
-        });
-      } catch (error) {
-        console.error("Error adding to favorites:", error);
-        res.status(500).send({
-          error: "Failed to add biodata to favorites.",
-          details: error.message,
-        });
+    // DELETE /favourites/:id — remove a favourite by its document _id
+    app.delete("/favourites/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+      const email = req.decoded.email;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      const result = await favoritesCollection.deleteOne({
+        _id: new ObjectId(id),
+        email, // ensures users can only delete their own
+      });
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Favourite not found" });
       }
+      res.send({ message: "Favourite removed successfully" });
     });
 
-    app.get("/favorites/:id", verifyToken, async (req, res) => {
-      const biodataId = req.params.id;
-      const userId = req.user.id;
+    // ════════════════════════════════════════════════════════════════════════
+    // PAYMENTS (Stripe)
+    // ════════════════════════════════════════════════════════════════════════
 
-      const favorite = await favoritesCollection.findOne({ biodataId, userId });
-
-      if (favorite) {
-        return res.status(200).json({ exists: true });
-      }
-
-      return res.status(404).json({ exists: false });
-    });
-
-    app.get("/favorites", verifyToken, async (req, res) => {
-      const email = req.query.email;
-      const query = { email: email };
-      const result = await favoritesCollection.find(query).toArray();
-      res.send(result);
-    });
-
-    app.delete("/favorites/:id", async (req, res) => {
-      const id = req.params.id;
-      const query = { _id: new ObjectId(id) };
-      const result = await favoritesCollection.deleteOne(query);
-      res.send(result);
-    });
-
-    // Create Payment Intent Route
-    app.post("/create-payment-intent", async (req, res) => {
-      const { price } = req.body;
-
-      const amount = parseInt(price * 100);
-      console.log(amount, "amount");
-
+    // POST /payment/create-intent — create Stripe PaymentIntent
+    app.post("/payment/create-intent", verifyToken, async (req, res) => {
+      const amount = 500; // Fixed $5.00 USD in cents
       const paymentIntent = await stripe.paymentIntents.create({
-        amount: amount,
+        amount,
         currency: "usd",
         payment_method_types: ["card"],
       });
-
-      res.send({
-        clientSecret: paymentIntent.client_secret,
-      });
+      res.send({ clientSecret: paymentIntent.client_secret });
     });
 
-    app.get("/payments/:email", verifyToken, async (req, res) => {
-      const query = { email: req.params.email };
-      if (req.params.email !== req.decoded.email) {
-        return res.status(403).send({ message: "forbidden access" });
+    // POST /payments — record a completed payment
+    app.post("/payments", verifyToken, async (req, res) => {
+      const payment = req.body;
+      const requesterEmail = req.decoded.email;
+
+      if (payment.email !== requesterEmail) {
+        return res.status(403).send({ message: "Forbidden access" });
       }
-      const result = await paymentCollection.find(query).toArray();
-      res.send(result);
+
+      payment.createdAt = new Date();
+      payment.amount = 5; // enforce fixed amount server-side
+
+      const paymentResult = await paymentCollection.insertOne(payment);
+      res.status(201).send(paymentResult);
     });
 
-    app.get("/payments", verifyToken, async (req, res) => {
+    // GET /payments — admin only; all payments
+    app.get("/payments", verifyToken, verifyAdmin, async (req, res) => {
       const result = await paymentCollection.find().toArray();
       res.send(result);
     });
 
-    app.post("/payments", async (req, res) => {
-      const payment = req.body;
-      const paymentResult = await paymentCollection.insertOne(payment);
-      console.log("payment info", payment);
-      res.send(paymentResult);
+    // GET /payments/:email — user's own payment history
+    app.get("/payments/:email", verifyToken, async (req, res) => {
+      const email = req.params.email;
+      if (email !== req.decoded.email) {
+        return res.status(403).send({ message: "Forbidden access" });
+      }
+      const result = await paymentCollection.find({ email }).toArray();
+      res.send(result);
     });
 
-    app.delete("/favorites/:biodataId", verifyToken, async (req, res) => {
-      const { biodataId } = req.params;
-      const email = req.decoded.email;
+    // ════════════════════════════════════════════════════════════════════════
+    // CONTACT REQUESTS
+    // ════════════════════════════════════════════════════════════════════════
+
+    // GET /contact-requests/mine — current user's contact requests
+    app.get("/contact-requests/mine", verifyToken, async (req, res) => {
+      const requesterEmail = req.decoded.email;
+      const result = await contactRequestCollection
+        .find({ requesterEmail })
+        .toArray();
+      res.send(result);
+    });
+
+    // GET /contact-requests — admin: all pending contact requests
+    app.get("/contact-requests", verifyToken, verifyAdmin, async (req, res) => {
+      const result = await contactRequestCollection.find().toArray();
+      res.send(result);
+    });
+
+    // POST /contact-requests — create after successful Stripe payment
+    app.post("/contact-requests", verifyToken, async (req, res) => {
+      const { biodataId, stripePaymentId } = req.body;
+      const requesterEmail = req.decoded.email;
 
       if (!biodataId) {
-        return res.status(400).json({ message: "biodataId is required" });
+        return res.status(400).send({ message: "biodataId is required" });
       }
 
-      try {
-        const result = await favoritesCollection.deleteOne({
-          email,
-          biodataId: String(biodataId),
-        });
-
-        if (result.deletedCount === 0) {
-          return res.status(404).json({ message: "Favorite not found" });
-        }
-
-        res.status(200).json({ message: "Favorite deleted successfully" });
-      } catch (error) {
-        console.error("Error deleting favorite:", error);
-        res.status(500).json({ message: "Internal server error" });
-      }
-    });
-
-    app.get("/success-stats", async (req, res) => {
-      const totalBiodata = await biodataCollection.countDocuments();
-      const maleBiodata = await biodataCollection.countDocuments({
-        biodataType: "Male",
+      // Prevent duplicate requests
+      const existing = await contactRequestCollection.findOne({
+        requesterEmail,
+        biodataId: parseInt(biodataId),
       });
-      const femaleBiodata = await biodataCollection.countDocuments({
-        biodataType: "Female",
+      if (existing) {
+        return res.status(400).send({ message: "Contact request already exists for this biodata" });
+      }
+
+      // Get biodata name for display
+      const biodata = await biodataCollection.findOne({ biodataId: parseInt(biodataId) });
+      if (!biodata) return res.status(404).send({ message: "Biodata not found" });
+
+      const contactRequest = {
+        biodataId: parseInt(biodataId),
+        biodataName: biodata.name,
+        requesterEmail,
+        status: "pending",
+        stripePaymentId: stripePaymentId || null,
+        amountPaid: 5,
+        createdAt: new Date(),
+      };
+
+      const result = await contactRequestCollection.insertOne(contactRequest);
+      res.status(201).send(result);
+    });
+
+    // PATCH /contact-requests/:id/approve — admin approves contact request
+    app.patch("/contact-requests/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      const result = await contactRequestCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "approved", approvedAt: new Date() } }
+      );
+      if (result.modifiedCount === 0) {
+        return res.status(404).send({ message: "Request not found or already approved" });
+      }
+      res.send({ success: true, message: "Contact request approved" });
+    });
+
+    // DELETE /contact-requests/:id — user deletes their own request
+    app.delete("/contact-requests/:id", verifyToken, async (req, res) => {
+      const { id } = req.params;
+      const email = req.decoded.email;
+      if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
+      const result = await contactRequestCollection.deleteOne({
+        _id: new ObjectId(id),
+        requesterEmail: email,
       });
-      const marriagesCompleted = await successStoryCollection.countDocuments();
-
-      res.json({
-        totalBiodata,
-        maleBiodata,
-        femaleBiodata,
-        marriagesCompleted,
-      });
-    });
-
-
-    app.get("/successStory", async (req, res) => {
-      try {
-        const { sortBy } = req.query;
-        const sortOption = sortBy === "marriageDate" ? { marriageDate: 1 } : {}; 
-        const successStories = await successStoryCollection
-          .find({})
-          .sort(sortOption)
-          .toArray();
-        res.status(200).json(successStories);
-      } catch (error) {
-        console.error("Error fetching success stories:", error);
-        res.status(500).json({ message: "Internal server error." });
+      if (result.deletedCount === 0) {
+        return res.status(404).send({ message: "Request not found" });
       }
+      res.send({ message: "Contact request deleted" });
     });
 
-    // POST route to save a success story
-    app.post("/successStory", verifyToken, async (req, res) => {
-      try {
-        const {
-          selfBiodataId,
-          partnerBiodataId,
-          coupleImage,
-          successStory,
-          marriageDate,
-          reviewStar,
-        } = req.body;
+    // ════════════════════════════════════════════════════════════════════════
+    // SUCCESS STORIES
+    // ════════════════════════════════════════════════════════════════════════
 
-        // Validate required fields
-        if (
-          !selfBiodataId ||
-          !partnerBiodataId ||
-          !coupleImage ||
-          !successStory ||
-          !marriageDate ||
-          !reviewStar
-        ) {
-          return res.status(400).json({ message: "All fields are required." });
-        }
+    // GET /success-stories — public; sorted by marriageDate descending
+    app.get("/success-stories", async (req, res) => {
+      const stories = await successStoryCollection
+        .find({})
+        .sort({ marriageDate: -1 })
+        .toArray();
+      res.send(stories);
+    });
 
-        // Validate reviewStar is within acceptable range (1-5)
-        if (reviewStar < 1 || reviewStar > 5) {
-          return res
-            .status(400)
-            .json({ message: "Review star must be between 1 and 5." });
-        }
+    // GET /success-stories/admin — admin view with full details
+    app.get("/success-stories/admin", verifyToken, verifyAdmin, async (req, res) => {
+      const stories = await successStoryCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+      res.send(stories);
+    });
 
-        const newStory = {
-          selfBiodataId,
-          partnerBiodataId,
-          coupleImage,
-          successStory,
-          marriageDate,
-          reviewStar: parseInt(reviewStar), // Ensure reviewStar is stored as a number
-          createdAt: new Date(),
-        };
+    // POST /success-stories — authenticated user submits a story
+    app.post("/success-stories", verifyToken, async (req, res) => {
+      const {
+        selfBiodataId,
+        partnerBiodataId,
+        coupleImage,
+        successStory,
+        marriageDate,
+        reviewStar,
+      } = req.body;
 
-        const result = await successStoryCollection.insertOne(newStory);
-        res.status(201).json({
-          message: "Success story added successfully!",
-          storyId: result.insertedId,
-        });
-      } catch (error) {
-        console.error("Error adding success story:", error);
-        res.status(500).json({ message: "Internal server error." });
+      if (!selfBiodataId || !partnerBiodataId || !successStory || !marriageDate || !reviewStar) {
+        return res.status(400).send({ message: "All fields are required" });
       }
-    });
 
-    app.get("/admin-stats", async (req, res) => {
-      try {
-        const biodataCount = await biodataCollection.estimatedDocumentCount();
-
-        // Count male and female biodata
-        const maleCount = await biodataCollection.countDocuments({
-          biodataType: "Male",
-        });
-        const femaleCount = await biodataCollection.countDocuments({
-          biodataType: "Female",
-        });
-
-        // Count premium biodata
-        const premiumCount = await biodataCollection.countDocuments({
-          premiumStatus: "approved",
-        });
-
-        // Calculate total revenue
-        // const payments = await paymentCollection.find().toArray();
-        // const revenue = payments.reduce((total, payment) => total + payment.amount, 0);
-
-        const result = await paymentCollection
-          .aggregate([
-            {
-              $group: {
-                _id: null,
-                totalRevenue: {
-                  $sum: "$amount",
-                },
-              },
-            },
-          ])
-          .toArray();
-
-        const revenue = result.length > 0 ? result[0].totalRevenue : 0;
-
-        res.send({
-          biodataCount,
-          maleCount,
-          femaleCount,
-          premiumCount,
-          revenue,
-        });
-      } catch (error) {
-        console.error("Error fetching admin stats:", error);
-        res.status(500).send({ error: "Internal server error" });
+      const star = parseInt(reviewStar);
+      if (star < 1 || star > 5) {
+        return res.status(400).send({ message: "Review star must be between 1 and 5" });
       }
+
+      const newStory = {
+        selfBiodataId: parseInt(selfBiodataId),
+        partnerBiodataId: parseInt(partnerBiodataId),
+        coupleImage: coupleImage || null,
+        successStory,
+        marriageDate: new Date(marriageDate),
+        reviewStar: star,
+        submitterEmail: req.decoded.email,
+        createdAt: new Date(),
+      };
+
+      const result = await successStoryCollection.insertOne(newStory);
+      res.status(201).send({ message: "Success story submitted!", storyId: result.insertedId });
     });
 
-    // Send a ping to confirm a successful connection
-    // await client.db("admin").command({ ping: 1 });
-    // console.log(
-    //   "Pinged your deployment. You successfully connected to MongoDB!"
-    // );
+    // ════════════════════════════════════════════════════════════════════════
+    // ADMIN DASHBOARD STATS
+    // ════════════════════════════════════════════════════════════════════════
+
+    // GET /admin/stats — admin KPIs: counts + revenue
+    app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
+      const [
+        biodataCount,
+        maleCount,
+        femaleCount,
+        premiumCount,
+        revenueResult,
+      ] = await Promise.all([
+        biodataCollection.estimatedDocumentCount(),
+        biodataCollection.countDocuments({ biodataType: "Male" }),
+        biodataCollection.countDocuments({ biodataType: "Female" }),
+        biodataCollection.countDocuments({ premiumStatus: "approved" }),
+        paymentCollection
+          .aggregate([{ $group: { _id: null, totalRevenue: { $sum: "$amount" } } }])
+          .toArray(),
+      ]);
+
+      const revenue = revenueResult[0]?.totalRevenue || 0;
+
+      res.send({ biodataCount, maleCount, femaleCount, premiumCount, revenue });
+    });
+
   } finally {
-    // Ensures that the client will close when you finish/error
-    // await client.close();
+    // Keep connection alive for serverless deployments
   }
 }
+
 run().catch(console.dir);
 
+// ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.send("Search Your Partner");
+  res.send({ message: "BandhanBD API is running", status: "ok" });
 });
 
 app.listen(port, () => {
-  console.log(`True Comapaions Running ${port}`);
+  console.log(`BandhanBD Server running on port ${port}`);
 });
