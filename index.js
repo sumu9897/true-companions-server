@@ -9,7 +9,6 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const app = express();
 const port = process.env.PORT || 5500;
 
-// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(
   cors({
     origin: [
@@ -22,7 +21,6 @@ app.use(
 );
 app.use(express.json());
 
-// ─── MongoDB Client ───────────────────────────────────────────────────────────
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.rmec6.mongodb.net/?retryWrites=true&w=majority`;
 
 const client = new MongoClient(uri, {
@@ -33,7 +31,6 @@ const client = new MongoClient(uri, {
   },
 });
 
-// ─── Auth Middleware ──────────────────────────────────────────────────────────
 const verifyToken = (req, res, next) => {
   const authorization = req.headers.authorization;
   if (!authorization) {
@@ -49,12 +46,10 @@ const verifyToken = (req, res, next) => {
   });
 };
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
 async function run() {
   try {
-    const db = client.db("trueCompanions");
+    const db = client.db("bondhanbd");
 
-    // Collections
     const userCollection = db.collection("users");
     const biodataCollection = db.collection("biodatas");
     const favoritesCollection = db.collection("favorites");
@@ -62,7 +57,6 @@ async function run() {
     const contactRequestCollection = db.collection("contactRequests");
     const successStoryCollection = db.collection("successStories");
 
-    // ── Role Middleware (must come after collections are defined) ─────────────
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
       const user = await userCollection.findOne({ email });
@@ -72,11 +66,6 @@ async function run() {
       next();
     };
 
-    // ════════════════════════════════════════════════════════════════════════
-    // AUTH — JWT
-    // ════════════════════════════════════════════════════════════════════════
-
-    // POST /jwt — issue JWT after Firebase verification
     app.post("/jwt", async (req, res) => {
       const user = req.body;
       const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
@@ -85,21 +74,13 @@ async function run() {
       res.send({ token });
     });
 
-    // ════════════════════════════════════════════════════════════════════════
-    // USERS
-    // ════════════════════════════════════════════════════════════════════════
-
-    // GET /users — admin only; supports ?search=username
     app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
       const search = req.query.search || "";
-      const query = search
-        ? { name: { $regex: search, $options: "i" } }
-        : {};
+      const query = search ? { name: { $regex: search, $options: "i" } } : {};
       const result = await userCollection.find(query).toArray();
       res.send(result);
     });
 
-    // GET /users/admin/:email — check if the requester is admin
     app.get("/users/admin/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
@@ -109,7 +90,6 @@ async function run() {
       res.send({ admin: user?.role === "admin" });
     });
 
-    // GET /users/premium/:email — check if user is premium
     app.get("/users/premium/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
@@ -119,14 +99,12 @@ async function run() {
       res.send({ isPremium: user?.role === "premium" || user?.isPremium === true });
     });
 
-    // POST /users — create user on first login (upsert-safe)
     app.post("/users", async (req, res) => {
       const user = req.body;
       const existingUser = await userCollection.findOne({ email: user.email });
       if (existingUser) {
         return res.send({ message: "User already exists", insertedId: null });
       }
-      // Default fields
       user.role = user.role || "user";
       user.isPremium = false;
       user.createdAt = new Date();
@@ -134,7 +112,6 @@ async function run() {
       res.status(201).send(result);
     });
 
-    // PATCH /users/admin/:id — make user admin
     app.patch("/users/admin/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       if (!ObjectId.isValid(id)) {
@@ -147,7 +124,6 @@ async function run() {
       res.send(result);
     });
 
-    // PATCH /users/premium/:id — grant premium status (admin only)
     app.patch("/users/premium/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       if (!ObjectId.isValid(id)) {
@@ -160,7 +136,6 @@ async function run() {
       res.send(result);
     });
 
-    // DELETE /users/:id — admin only
     app.delete("/users/:id", verifyToken, verifyAdmin, async (req, res) => {
       const id = req.params.id;
       if (!ObjectId.isValid(id)) {
@@ -170,21 +145,12 @@ async function run() {
       res.send(result);
     });
 
-    // ════════════════════════════════════════════════════════════════════════
-    // BIODATAS
-    // ════════════════════════════════════════════════════════════════════════
-
-    // POST /biodatas — create biodata; auto-generates biodataId
     app.post("/biodatas", verifyToken, async (req, res) => {
       const biodata = req.body;
-
-      // Prevent duplicate biodata per user
       const existing = await biodataCollection.findOne({ email: biodata.email });
       if (existing) {
         return res.status(400).send({ message: "Biodata already exists for this user. Use PUT to update." });
       }
-
-      // Auto-generate sequential biodataId
       const lastBiodata = await biodataCollection
         .find()
         .sort({ biodataId: -1 })
@@ -193,27 +159,24 @@ async function run() {
       const lastId = lastBiodata[0]?.biodataId || 0;
       biodata.biodataId = lastId + 1;
       biodata.isPremium = false;
-      biodata.premiumStatus = "none"; // none | pending | approved
+      biodata.premiumStatus = "none";
       biodata.createdAt = new Date();
       biodata.updatedAt = new Date();
-
       const result = await biodataCollection.insertOne(biodata);
       res.status(201).send(result);
     });
 
-    // PUT /biodatas/:email — update user's own biodata
     app.put("/biodatas/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
         return res.status(403).send({ message: "Forbidden access" });
       }
       const update = req.body;
-      delete update._id;           // prevent _id overwrite
-      delete update.biodataId;     // prevent ID overwrite
-      delete update.isPremium;     // only admin changes this
+      delete update._id;
+      delete update.biodataId;
+      delete update.isPremium;
       delete update.premiumStatus;
       update.updatedAt = new Date();
-
       const result = await biodataCollection.updateOne(
         { email },
         { $set: update },
@@ -222,16 +185,11 @@ async function run() {
       res.send(result);
     });
 
-    // GET /biodatas — public list with filtering & pagination
     app.get("/biodatas", async (req, res) => {
       const {
-        page,
-        limit,
-        ageMin = 18,
-        ageMax = 100,
-        biodataType,
-        division,
-        sort,
+        page, limit,
+        ageMin = 18, ageMax = 100,
+        biodataType, division, sort,
       } = req.query;
 
       const query = {
@@ -241,7 +199,6 @@ async function run() {
       };
 
       const sortOption = sort === "desc" ? { age: -1 } : sort === "asc" ? { age: 1 } : {};
-
       let cursor = biodataCollection.find(query).sort(sortOption);
 
       if (page && limit) {
@@ -254,7 +211,6 @@ async function run() {
       res.send({ biodatas, total });
     });
 
-    // GET /biodatas/premium — 6 premium profiles for homepage
     app.get("/biodatas/premium", async (req, res) => {
       const { order = "asc" } = req.query;
       const sortOrder = order === "desc" ? -1 : 1;
@@ -266,7 +222,6 @@ async function run() {
       res.send(premiumProfiles);
     });
 
-    // GET /biodatas/stats — public counters for homepage
     app.get("/biodatas/stats", async (req, res) => {
       const totalBiodata = await biodataCollection.countDocuments();
       const maleBiodata = await biodataCollection.countDocuments({ biodataType: "Male" });
@@ -276,7 +231,6 @@ async function run() {
       res.send({ totalBiodata, maleBiodata, femaleBiodata, premiumBiodata, marriagesCompleted });
     });
 
-    // GET /biodatas/mine — authenticated user's own biodata
     app.get("/biodatas/mine", verifyToken, async (req, res) => {
       const email = req.decoded.email;
       const biodata = await biodataCollection.findOne({ email });
@@ -286,7 +240,6 @@ async function run() {
       res.send(biodata);
     });
 
-    // GET /biodatas/by-email/:email — fetch biodata by email
     app.get("/biodatas/by-email/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
@@ -297,8 +250,6 @@ async function run() {
       res.send(biodata);
     });
 
-    // GET /biodatas/:id — single biodata by MongoDB _id (private route)
-    // Contact info (email/mobile) is hidden unless user is premium or has approved contact request
     app.get("/biodatas/:id", verifyToken, async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) {
@@ -309,19 +260,15 @@ async function run() {
         if (!biodata) return res.status(404).send({ message: "Biodata not found" });
 
         const requesterEmail = req.decoded.email;
-
-        // Check if requester is premium
         const requesterUser = await userCollection.findOne({ email: requesterEmail });
         const isPremium = requesterUser?.role === "premium" || requesterUser?.isPremium === true;
 
-        // Check if requester has an approved contact request for this biodata
         const approvedRequest = await contactRequestCollection.findOne({
           requesterEmail,
           biodataId: biodata.biodataId,
           status: "approved",
         });
 
-        // Strip contact info if not authorised
         if (!isPremium && !approvedRequest) {
           delete biodata.contactEmail;
           delete biodata.mobileNumber;
@@ -334,7 +281,6 @@ async function run() {
       }
     });
 
-    // POST /biodatas/premium-request — user requests premium upgrade
     app.post("/biodatas/premium-request", verifyToken, async (req, res) => {
       const email = req.decoded.email;
       const biodata = await biodataCollection.findOne({ email });
@@ -352,7 +298,6 @@ async function run() {
       res.send({ success: true, message: "Premium request sent. Awaiting admin approval." });
     });
 
-    // GET /admin/biodatas — all biodatas for admin with pagination
     app.get("/admin/biodatas", verifyToken, verifyAdmin, async (req, res) => {
       const { page = 1, limit = 20 } = req.query;
       const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -365,7 +310,6 @@ async function run() {
       res.send({ biodatas, total, page: parseInt(page), limit: parseInt(limit) });
     });
 
-    // GET /admin/premium-requests — pending premium requests
     app.get("/admin/premium-requests", verifyToken, verifyAdmin, async (req, res) => {
       const pendingRequests = await biodataCollection
         .find({ premiumStatus: "pending" })
@@ -373,7 +317,6 @@ async function run() {
       res.send(pendingRequests);
     });
 
-    // PATCH /admin/biodatas/:id/approve-premium — approve premium request
     app.patch("/admin/biodatas/:id/approve-premium", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
@@ -387,7 +330,6 @@ async function run() {
       res.send({ success: true, message: "Premium request approved" });
     });
 
-    // PATCH /admin/biodatas/:id/reject-premium — reject premium request
     app.patch("/admin/biodatas/:id/reject-premium", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
@@ -410,6 +352,23 @@ async function run() {
       const email = req.decoded.email;
       const result = await favoritesCollection.find({ email }).toArray();
       res.send(result);
+    });
+
+    // GET /favourites/check — check if a specific biodata is in user's favourites
+    app.get("/favourites/check", verifyToken, async (req, res) => {
+      const { biodataMongoId } = req.query;
+      const email = req.decoded.email;
+
+      if (!biodataMongoId || !ObjectId.isValid(biodataMongoId)) {
+        return res.status(400).send({ message: "Invalid biodata ID" });
+      }
+
+      const existing = await favoritesCollection.findOne({
+        email,
+        biodataMongoId: new ObjectId(biodataMongoId),
+      });
+
+      res.send({ isFavourite: !!existing });
     });
 
     // POST /favourites — add a biodata to favourites
@@ -453,7 +412,7 @@ async function run() {
       if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
       const result = await favoritesCollection.deleteOne({
         _id: new ObjectId(id),
-        email, // ensures users can only delete their own
+        email,
       });
       if (result.deletedCount === 0) {
         return res.status(404).send({ message: "Favourite not found" });
@@ -465,9 +424,8 @@ async function run() {
     // PAYMENTS (Stripe)
     // ════════════════════════════════════════════════════════════════════════
 
-    // POST /payment/create-intent — create Stripe PaymentIntent
     app.post("/payment/create-intent", verifyToken, async (req, res) => {
-      const amount = 500; // Fixed $5.00 USD in cents
+      const amount = 500;
       const paymentIntent = await stripe.paymentIntents.create({
         amount,
         currency: "usd",
@@ -476,7 +434,6 @@ async function run() {
       res.send({ clientSecret: paymentIntent.client_secret });
     });
 
-    // POST /payments — record a completed payment
     app.post("/payments", verifyToken, async (req, res) => {
       const payment = req.body;
       const requesterEmail = req.decoded.email;
@@ -486,19 +443,17 @@ async function run() {
       }
 
       payment.createdAt = new Date();
-      payment.amount = 5; // enforce fixed amount server-side
+      payment.amount = 5;
 
       const paymentResult = await paymentCollection.insertOne(payment);
       res.status(201).send(paymentResult);
     });
 
-    // GET /payments — admin only; all payments
     app.get("/payments", verifyToken, verifyAdmin, async (req, res) => {
       const result = await paymentCollection.find().toArray();
       res.send(result);
     });
 
-    // GET /payments/:email — user's own payment history
     app.get("/payments/:email", verifyToken, async (req, res) => {
       const email = req.params.email;
       if (email !== req.decoded.email) {
@@ -512,7 +467,6 @@ async function run() {
     // CONTACT REQUESTS
     // ════════════════════════════════════════════════════════════════════════
 
-    // GET /contact-requests/mine — current user's contact requests
     app.get("/contact-requests/mine", verifyToken, async (req, res) => {
       const requesterEmail = req.decoded.email;
       const result = await contactRequestCollection
@@ -521,13 +475,11 @@ async function run() {
       res.send(result);
     });
 
-    // GET /contact-requests — admin: all pending contact requests
     app.get("/contact-requests", verifyToken, verifyAdmin, async (req, res) => {
       const result = await contactRequestCollection.find().toArray();
       res.send(result);
     });
 
-    // POST /contact-requests — create after successful Stripe payment
     app.post("/contact-requests", verifyToken, async (req, res) => {
       const { biodataId, stripePaymentId } = req.body;
       const requesterEmail = req.decoded.email;
@@ -536,7 +488,6 @@ async function run() {
         return res.status(400).send({ message: "biodataId is required" });
       }
 
-      // Prevent duplicate requests
       const existing = await contactRequestCollection.findOne({
         requesterEmail,
         biodataId: parseInt(biodataId),
@@ -545,7 +496,6 @@ async function run() {
         return res.status(400).send({ message: "Contact request already exists for this biodata" });
       }
 
-      // Get biodata name for display
       const biodata = await biodataCollection.findOne({ biodataId: parseInt(biodataId) });
       if (!biodata) return res.status(404).send({ message: "Biodata not found" });
 
@@ -563,7 +513,6 @@ async function run() {
       res.status(201).send(result);
     });
 
-    // PATCH /contact-requests/:id/approve — admin approves contact request
     app.patch("/contact-requests/:id/approve", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid ID" });
@@ -577,7 +526,6 @@ async function run() {
       res.send({ success: true, message: "Contact request approved" });
     });
 
-    // DELETE /contact-requests/:id — user deletes their own request
     app.delete("/contact-requests/:id", verifyToken, async (req, res) => {
       const { id } = req.params;
       const email = req.decoded.email;
@@ -596,7 +544,6 @@ async function run() {
     // SUCCESS STORIES
     // ════════════════════════════════════════════════════════════════════════
 
-    // GET /success-stories — public; sorted by marriageDate descending
     app.get("/success-stories", async (req, res) => {
       const stories = await successStoryCollection
         .find({})
@@ -605,7 +552,6 @@ async function run() {
       res.send(stories);
     });
 
-    // GET /success-stories/admin — admin view with full details
     app.get("/success-stories/admin", verifyToken, verifyAdmin, async (req, res) => {
       const stories = await successStoryCollection
         .find({})
@@ -614,15 +560,10 @@ async function run() {
       res.send(stories);
     });
 
-    // POST /success-stories — authenticated user submits a story
     app.post("/success-stories", verifyToken, async (req, res) => {
       const {
-        selfBiodataId,
-        partnerBiodataId,
-        coupleImage,
-        successStory,
-        marriageDate,
-        reviewStar,
+        selfBiodataId, partnerBiodataId, coupleImage,
+        successStory, marriageDate, reviewStar,
       } = req.body;
 
       if (!selfBiodataId || !partnerBiodataId || !successStory || !marriageDate || !reviewStar) {
@@ -650,17 +591,12 @@ async function run() {
     });
 
     // ════════════════════════════════════════════════════════════════════════
-    // ADMIN DASHBOARD STATS
+    // ADMIN STATS
     // ════════════════════════════════════════════════════════════════════════
 
-    // GET /admin/stats — admin KPIs: counts + revenue
     app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
       const [
-        biodataCount,
-        maleCount,
-        femaleCount,
-        premiumCount,
-        revenueResult,
+        biodataCount, maleCount, femaleCount, premiumCount, revenueResult,
       ] = await Promise.all([
         biodataCollection.estimatedDocumentCount(),
         biodataCollection.countDocuments({ biodataType: "Male" }),
@@ -672,18 +608,14 @@ async function run() {
       ]);
 
       const revenue = revenueResult[0]?.totalRevenue || 0;
-
       res.send({ biodataCount, maleCount, femaleCount, premiumCount, revenue });
     });
 
-  } finally {
-    // Keep connection alive for serverless deployments
-  }
+  } finally {}
 }
 
 run().catch(console.dir);
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
   res.send({ message: "BandhanBD API is running", status: "ok" });
 });
