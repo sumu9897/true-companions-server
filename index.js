@@ -14,7 +14,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:5173",
-      "https://true-companions.web.app",
+      "https://bandhanbd.web.app",
       process.env.CLIENT_URL,
     ].filter(Boolean),
     credentials: true,
