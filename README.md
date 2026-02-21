@@ -14,7 +14,7 @@
 
 | Resource | URL |
 |---|---|
-| 🔧 Base URL | `https://true-companions-server.vercel.app` |
+| 🔧 Base URL | `https://bandhan-bd-server.vercel.app` |
 | ❤️ Health Check | `GET /` |
 
 ---
